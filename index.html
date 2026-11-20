@@ -1,0 +1,15 @@
+:root{
+  --paper:#EDF1F5; --ink:#10203A; --cobalt:#2B50F0; --chalk:#FFD84D; --mist:#C9D3DF; --ok:#1F9D6B; --bad:#C2362B;
+  --display:"Bricolage Grotesque",system-ui,sans-serif; --body:"Figtree",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--paper);color:var(--ink);font:400 1.0625rem/1.5 var(--body)}
+h1{font-family:var(--display);font-weight:800;line-height:1.05;letter-spacing:-.02em;margin:0}
+.brand{font:800 1.25rem var(--display);letter-spacing:-.01em}
+.btn{font:600 1rem var(--body);min-height:48px;padding:0 1.25rem;border-radius:12px;border:2px solid var(--ink);background:transparent;color:var(--ink);cursor:pointer}
+.btn.primary{background:var(--cobalt);border-color:var(--cobalt);color:#fff}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn:focus-visible,input:focus-visible{outline:3px solid var(--cobalt);outline-offset:3px}
+[hidden]{display:none!important}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
