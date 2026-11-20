@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hublot – téléphone</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,800&family=Figtree:wght@400;600&display=swap">
+<link rel="stylesheet" href="/hublot.css">
+<style>
+main{max-width:30rem;margin:0 auto;padding:1.25rem 1.25rem 3rem}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:2rem}
+.state{display:flex;align-items:center;gap:.45rem;font-size:.95rem}
+.state::before{content:"";width:.7rem;height:.7rem;border-radius:50%;background:var(--mist)}
+.state.on::before{background:var(--ok)}
+h1{font-size:2.2rem;margin-bottom:1.5rem}
+label{display:block;font-weight:600;margin-bottom:.5rem}
+#c{width:100%;font:800 2.6rem/1 var(--display);font-variant-numeric:tabular-nums;letter-spacing:.04em;padding:.7rem 1rem;border:3px solid var(--ink);border-radius:14px;background:var(--chalk);color:var(--ink);margin-bottom:1rem}
+#go{width:100%}
+.err{color:var(--bad);font-weight:600;min-height:1.5em;margin:.8rem 0 0}
+.porthole{width:min(78vw,18rem);aspect-ratio:1;border-radius:50%;margin:0 auto 1.5rem;border:10px solid var(--ink);box-shadow:0 0 0 4px var(--chalk);overflow:hidden;position:relative;background:var(--mist);display:grid;place-items:center}
+.porthole video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.porthole p{margin:0;font-weight:600;color:var(--ink);position:relative}
+#status{text-align:center;margin:0 0 1.25rem;min-height:1.5em}
+.actions{display:grid;gap:.75rem}
+#sent{list-style:none;margin:1.5rem 0 0;padding:0}
+#sent li{padding:.6rem 0;border-top:1px solid var(--mist);overflow-wrap:anywhere}
+#sent progress{display:block;width:100%;height:.5rem;margin-top:.35rem;accent-color:var(--cobalt)}
+</style>
+</head>
+<body>
+<main>
+  <header><span class="brand">Hublot</span><span id="state" class="state">Non connecté</span></header>
+
+  <section id="s1">
+    <h1>Entrez le code affiché sur l’écran.</h1>
+    <label for="c">Code à 6 chiffres</label>
+    <input id="c" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" autocomplete="one-time-code" placeholder="000 000">
+    <button id="go" class="btn primary">Se connecter</button>
+    <p id="err" class="err" role="alert"></p>
+  </section>
+
+  <section id="s2" hidden>
+    <div class="porthole"><video id="pv" autoplay muted playsinline></video><p id="ph">Caméra éteinte</p></div>
+    <p id="status"></p>
+    <div class="actions">
+      <button id="cam" class="btn primary">Activer la caméra</button>
+      <button id="flip" class="btn" hidden>Changer de caméra</button>
+      <button id="send" class="btn">Envoyer un fichier</button>
+      <input id="file" type="file" multiple hidden>
+    </div>
+    <ul id="sent"></ul>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let ws, pc, ctl, files, stream, track, sender, wake, ice = [], chain = Promise.resolve(), facing = 'environment';
+
+const sig = data => ws.send(JSON.stringify({ type: 'signal', data }));
+const setState = (txt, on) => { $('#state').textContent = txt; $('#state').classList.toggle('on', !!on); };
+const ERR = {
+  invalid: 'Code inconnu ou expiré. Vérifiez les chiffres sur l’écran de l’ordinateur.',
+  locked: 'Trop d’essais. Attendez une minute, puis réessayez.',
+  gone: 'L’ordinateur s’est déconnecté. Saisissez le nouveau code affiché.',
+  net: 'Connexion au serveur impossible. Vérifiez votre réseau et réessayez.'
+};
+
+async function join(code) {
+  $('#err').textContent = ''; $('#go').disabled = true;
+  try { ice = (await (await fetch('/config')).json()).iceServers; } catch {}
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'join', code }));
+  ws.onerror = () => { $('#err').textContent = ERR.net; $('#go').disabled = false; };
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'error') { $('#err').textContent = ERR[m.reason]; $('#go').disabled = false; }
+    else if (m.type === 'paired') startPeer();
+    else if (m.type === 'peer-left') reset(ERR.gone);
+    else if (m.type === 'signal') chain = chain.then(() => onSignal(m.data)).catch(console.error);
+  };
+}
+
+function startPeer() {
+  $('#s1').hidden = true; $('#s2').hidden = false; setState('Connexion…');
+  pc = new RTCPeerConnection({ iceServers: ice });
+  files = pc.createDataChannel('files'); files.binaryType = 'arraybuffer'; files.bufferedAmountLowThreshold = 1 << 20;
+  ctl = pc.createDataChannel('ctl'); ctl.onmessage = e => command(JSON.parse(e.data));
+  pc.onicecandidate = e => e.candidate && sig({ candidate: e.candidate });
+  pc.onnegotiationneeded = async () => { await pc.setLocalDescription(await pc.createOffer()); sig({ sdp: pc.localDescription }); };
+  pc.onconnectionstatechange = () => {
+    const s = pc.connectionState;
+    if (s === 'connected') setState('Connecté à l’ordinateur', true);
+    else if (s === 'failed') { setState('Échec'); $('#status').textContent = 'Impossible de joindre l’ordinateur directement. Un serveur TURN est probablement nécessaire sur ce réseau.'; }
+    else setState('Connexion…');
+  };
+}
+async function onSignal(d) {
+  if (!pc) return;
+  if (d.sdp) await pc.setRemoteDescription(d.sdp);
+  else if (d.candidate) { try { await pc.addIceCandidate(d.candidate); } catch {} }
+}
+function reset(msg) {
+  if (pc) pc.close(); if (track) track.stop();
+  pc = ctl = files = stream = track = sender = null;
+  $('#s2').hidden = true; $('#s1').hidden = false; $('#go').disabled = false; $('#pv').srcObject = null;
+  $('#ph').hidden = false; $('#cam').textContent = 'Activer la caméra'; $('#flip').hidden = true;
+  $('#err').textContent = msg || ''; setState('Non connecté');
+}
+
+async function getTrack() {
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: facing, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }, audio: false
+  });
+  track = stream.getVideoTracks()[0];
+  $('#pv').srcObject = stream; $('#ph').hidden = true;
+}
+async function startCam() {
+  try { await getTrack(); }
+  catch { $('#status').textContent = 'Caméra bloquée. Autorisez-la dans les réglages du navigateur, puis réessayez.'; return; }
+  sender = pc.addTrack(track, stream);
+  $('#cam').hidden = true; $('#flip').hidden = false; $('#status').textContent = 'La caméra est en direct sur l’écran.';
+  keepAwake(); sendCaps();
+}
+async function flip() {
+  if (track) track.stop();
+  facing = facing === 'environment' ? 'user' : 'environment';
+  try { await getTrack(); await sender.replaceTrack(track); sendCaps(); }
+  catch { $('#status').textContent = 'Impossible de changer de caméra sur cet appareil.'; }
+}
+function sendCaps() {
+  const c = track.getCapabilities ? track.getCapabilities() : {};
+  if (ctl.readyState === 'open') ctl.send(JSON.stringify({ torch: !!c.torch }));
+  else ctl.onopen = () => ctl.send(JSON.stringify({ torch: !!c.torch }));
+}
+function command(m) {
+  if (m.cmd === 'flip') flip();
+  if (m.cmd === 'torch' && track) track.applyConstraints({ advanced: [{ torch: m.on }] }).catch(() => {});
+}
+async function keepAwake() {
+  try { wake = await navigator.wakeLock.request('screen'); } catch {}
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && track) keepAwake(); });
+
+async function sendFile(f, bar) {
+  const CH = 16384; let off = 0;
+  files.send(JSON.stringify({ t: 'meta', name: f.name, size: f.size, type: f.type }));
+  while (off < f.size) {
+    if (files.bufferedAmount > (1 << 20)) await new Promise(r => { files.onbufferedamountlow = () => { files.onbufferedamountlow = null; r(); }; });
+    const buf = await f.slice(off, off + CH).arrayBuffer();
+    files.send(buf); off += buf.byteLength; bar.value = off / f.size;
+  }
+  files.send(JSON.stringify({ t: 'end' }));
+}
+$('#send').onclick = () => {
+  if (!files || files.readyState !== 'open') { $('#status').textContent = 'Connexion à l’ordinateur en cours. Réessayez dans un instant.'; return; }
+  $('#file').click();
+};
+$('#file').onchange = async e => {
+  for (const f of e.target.files) {
+    const li = document.createElement('li'), t = document.createElement('div'), bar = document.createElement('progress');
+    t.textContent = f.name; bar.max = 1; bar.value = 0; li.append(t, bar); $('#sent').prepend(li);
+    try { await sendFile(f, bar); t.textContent = f.name + ' : envoyé'; }
+    catch { t.textContent = f.name + ' : échec de l’envoi'; }
+  }
+  e.target.value = '';
+};
+
+$('#cam').onclick = startCam;
+$('#flip').onclick = flip;
+$('#go').onclick = () => { const c = $('#c').value.replace(/\D/g, ''); c.length === 6 ? join(c) : ($('#err').textContent = 'Le code compte 6 chiffres.'); };
+$('#c').oninput = e => {
+  const d = e.target.value.replace(/\D/g, '').slice(0, 6);
+  e.target.value = d.length > 3 ? d.slice(0, 3) + ' ' + d.slice(3) : d;
+  if (d.length === 6) join(d);
+};
+const pre = new URLSearchParams(location.search).get('c');
+if (pre) join(pre);
+</script>
+</body>
+</html>
