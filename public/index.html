@@ -1,15 +1,189 @@
-:root{
-  --paper:#EDF1F5; --ink:#10203A; --cobalt:#2B50F0; --chalk:#FFD84D; --mist:#C9D3DF; --ok:#1F9D6B; --bad:#C2362B;
-  --display:"Bricolage Grotesque",system-ui,sans-serif; --body:"Figtree",system-ui,sans-serif;
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hublot – écran ordinateur</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,800&family=Figtree:wght@400;600&display=swap">
+  <link rel="stylesheet" href="/hublot.css">
+  <style>
+    main{max-width:64rem;margin:auto;padding:2rem}
+    header{display:flex;justify-content:space-between;align-items:center;margin-bottom:2rem}
+    .state{font-size:.95rem}.state::before{content:"";display:inline-block;width:.7rem;height:.7rem;border-radius:50%;background:var(--mist);margin-right:.5rem}
+    .state.on::before{background:var(--ok)}
+    h1{font-size:clamp(2rem,5vw,3.5rem);margin-bottom:.5rem}
+    .layout{display:grid;grid-template-columns:1.2fr .8fr;gap:2rem;align-items:start}
+    .panel{border:2px solid var(--ink);border-radius:18px;padding:1.5rem;background:#fff}
+    #code{font:800 clamp(2.5rem,7vw,4rem)/1 var(--display);letter-spacing:.08em;background:var(--chalk);padding:1rem;border-radius:12px;text-align:center;margin:1rem 0}
+    #qr{display:block;width:190px;height:190px;margin:1rem auto}
+    #video{width:100%;aspect-ratio:16/9;object-fit:contain;background:#10203A;border-radius:12px}
+    .controls{display:flex;flex-wrap:wrap;gap:.6rem;margin-top:1rem}
+    #files{padding:0;list-style:none}
+    #files li{padding:.7rem 0;border-top:1px solid var(--mist);overflow-wrap:anywhere}
+    .hint{color:#536174}
+    @media(max-width:700px){main{padding:1rem}.layout{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="brand">Hublot</span>
+    <span id="state" class="state">Connexion au serveur…</span>
+  </header>
+
+  <section class="layout">
+    <div>
+      <h1>Votre téléphone devient une caméra.</h1>
+      <p class="hint">Scannez le QR code ou ouvrez le lien sur votre téléphone, puis saisissez le code affiché.</p>
+      <div class="panel">
+        <strong>Code d’appairage</strong>
+        <div id="code">Connexion…</div>
+        <img id="qr" alt="QR code de connexion" hidden>
+        <p id="phoneLink" class="hint" style="text-align:center"></p>
+      </div>
+      <div class="panel" style="margin-top:1rem">
+        <h2>Fichiers reçus</h2>
+        <ul id="files"><li class="hint">Aucun fichier reçu pour le moment.</li></ul>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Caméra en direct</h2>
+      <video id="video" autoplay playsinline></video>
+      <p id="status" class="hint">En attente du téléphone…</p>
+      <div class="controls">
+        <button id="flip" class="btn" disabled>Changer de caméra</button>
+        <button id="torch" class="btn" disabled>Lampe torche</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let ws, pc, ctl, ice = [], chain = Promise.resolve(), torchOn = false;
+let incoming = null;
+
+function setState(text, on = false) {
+  $('#state').textContent = text;
+  $('#state').classList.toggle('on', on);
 }
-*{box-sizing:border-box}
-html,body{height:100%;margin:0}
-body{background:var(--paper);color:var(--ink);font:400 1.0625rem/1.5 var(--body)}
-h1{font-family:var(--display);font-weight:800;line-height:1.05;letter-spacing:-.02em;margin:0}
-.brand{font:800 1.25rem var(--display);letter-spacing:-.01em}
-.btn{font:600 1rem var(--body);min-height:48px;padding:0 1.25rem;border-radius:12px;border:2px solid var(--ink);background:transparent;color:var(--ink);cursor:pointer}
-.btn.primary{background:var(--cobalt);border-color:var(--cobalt);color:#fff}
-.btn:disabled{opacity:.45;cursor:not-allowed}
-.btn:focus-visible,input:focus-visible{outline:3px solid var(--cobalt);outline-offset:3px}
-[hidden]{display:none!important}
-@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+function signal(data) {
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'signal', data }));
+  }
+}
+function showCode(code) {
+  $('#code').textContent = code.slice(0, 3) + ' ' + code.slice(3);
+  const link = location.origin + '/p?c=' + encodeURIComponent(code);
+  $('#phoneLink').innerHTML = '<a href="' + link + '" target="_blank" rel="noopener">Ouvrir la page téléphone</a>';
+  $('#qr').src = 'https://api.qrserver.com/v1/create-qr-code/?size=190x190&data=' + encodeURIComponent(link);
+  $('#qr').hidden = false;
+}
+function setupPeer() {
+  pc = new RTCPeerConnection({ iceServers: ice });
+  pc.onicecandidate = e => { if (e.candidate) signal({ candidate: e.candidate }); };
+  pc.ontrack = e => {
+    $('#video').srcObject = e.streams[0];
+    $('#status').textContent = 'La caméra du téléphone est en direct.';
+    setState('Téléphone connecté', true);
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'connected') setState('Téléphone connecté', true);
+    if (pc.connectionState === 'failed') {
+      setState('Connexion WebRTC impossible');
+      $('#status').textContent = 'La connexion directe a échoué. Ce réseau peut nécessiter un serveur TURN.';
+    }
+  };
+  pc.ondatachannel = e => {
+    if (e.channel.label === 'ctl') {
+      ctl = e.channel;
+      ctl.onopen = () => {
+        $('#flip').disabled = false;
+        $('#torch').disabled = false;
+      };
+      ctl.onmessage = msg => {
+        try { $('#torch').disabled = !JSON.parse(msg.data).torch; } catch {}
+      };
+    }
+    if (e.channel.label === 'files') {
+      e.channel.binaryType = 'arraybuffer';
+      e.channel.onmessage = receiveFileData;
+    }
+  };
+}
+async function receiveSignal(data) {
+  if (!pc) setupPeer();
+  if (data.sdp) {
+    await pc.setRemoteDescription(data.sdp);
+    if (data.sdp.type === 'offer') {
+      await pc.setLocalDescription(await pc.createAnswer());
+      signal({ sdp: pc.localDescription });
+    }
+  } else if (data.candidate) {
+    try { await pc.addIceCandidate(data.candidate); } catch {}
+  }
+}
+function receiveFileData(event) {
+  const data = event.data;
+  if (typeof data === 'string') {
+    let msg;
+    try { msg = JSON.parse(data); } catch { return; }
+    if (msg.t === 'meta') {
+      incoming = { name: msg.name || 'fichier', type: msg.type || 'application/octet-stream', chunks: [] };
+      $('#files').querySelector('.hint')?.remove();
+    } else if (msg.t === 'end' && incoming) {
+      const blob = new Blob(incoming.chunks, { type: incoming.type });
+      const url = URL.createObjectURL(blob);
+      const li = document.createElement('li');
+      const a = document.createElement('a');
+      a.href = url; a.download = incoming.name; a.textContent = 'Télécharger ' + incoming.name;
+      li.append(a); $('#files').prepend(li); incoming = null;
+    }
+  } else if (incoming) {
+    incoming.chunks.push(data);
+  }
+}
+async function start() {
+  try {
+    const r = await fetch('/config');
+    ice = (await r.json()).iceServers || [];
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+    ws.onopen = () => {
+      setState('Connecté au serveur', true);
+      ws.send(JSON.stringify({ type: 'host' }));
+    };
+    ws.onmessage = event => {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'code') showCode(msg.code);
+      else if (msg.type === 'paired') {
+        setState('Téléphone appairé', true);
+        $('#status').textContent = 'Connexion vidéo en cours…';
+        if (!pc) setupPeer();
+      } else if (msg.type === 'peer-left') {
+        if (pc) pc.close();
+        pc = ctl = null;
+        $('#video').srcObject = null;
+        $('#status').textContent = 'Téléphone déconnecté. En attente d’un nouvel appairage…';
+        setState('En attente du téléphone');
+      } else if (msg.type === 'signal') {
+        chain = chain.then(() => receiveSignal(msg.data)).catch(console.error);
+      }
+    };
+    ws.onclose = () => setState('Serveur déconnecté');
+    ws.onerror = () => setState('Erreur de connexion au serveur');
+  } catch (e) {
+    setState('Erreur de connexion au serveur');
+    console.error(e);
+  }
+}
+$('#flip').onclick = () => ctl?.send(JSON.stringify({ cmd: 'flip' }));
+$('#torch').onclick = () => {
+  torchOn = !torchOn;
+  ctl?.send(JSON.stringify({ cmd: 'torch', on: torchOn }));
+  $('#torch').textContent = torchOn ? 'Éteindre la lampe' : 'Lampe torche';
+};
+start();
+</script>
+</body>
+</html>
