@@ -1,0 +1,20 @@
+# Dépendances
+node_modules/
+
+# Journaux
+*.log
+npm-debug.log*
+
+# Variables d'environnement (TURN, etc.)
+.env
+.env.*
+
+# Système et éditeurs
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Divers
+coverage/
+tmp/
